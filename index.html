@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Object Detection & Classification</title>
+    <style>
+        body { font-family: Arial, sans-serif; }
+        #video { display: block; margin: 0 auto; }
+        #capturedImage { display: block; margin: 20px auto; }
+        #details, #classification { margin-top: 20px; text-align: center; }
+    </style>
+</head>
+<body>
+    <h1>Object Detection and Classification</h1>
+
+    <!-- Video feed -->
+    <img src="{{ url_for('video_feed') }}" id="video" width="720px" />
+
+    <!-- Button to capture image -->
+    <button id="captureButton">Capture Image</button>
+
+    <!-- Captured image display -->
+    <h3>Captured Image:</h3>
+    <img id="capturedImage" src="" width="720px" />
+
+    <!-- Display detection details -->
+    <div id="details"></div>
+
+    <!-- Display classification results -->
+    <div id="classification">
+        <h3>Classification Results:</h3>
+        <p id="brandModel"></p>
+    </div>
+
+    <script>
+        document.getElementById('captureButton').addEventListener('click', function () {
+            fetch('/capture_image', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.image_url) {
+                        document.getElementById('capturedImage').src = data.image_url;
+                    }
+                    document.getElementById('details').innerHTML = `<pre>${JSON.stringify(data.details, null, 2)}</pre>`;
+
+                    // Display brand and model if available
+                    if (data.details.classification) {
+                        document.getElementById('brandModel').innerText = `Brand/Model: ${data.details.classification}`;
+                    } else {
+                        document.getElementById('brandModel').innerText = 'No phone detected.';
+                    }
+                })
+                .catch(error => console.error('Error:', error));
+        });
+    </script>
+</body>
+</html>
