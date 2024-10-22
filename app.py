@@ -1,178 +1,113 @@
-# app.py
-
-from flask import Flask, request, render_template, redirect, url_for, flash
-import numpy as np
-import tensorflow as tf
-from tensorflow.keras.preprocessing.image import load_img, img_to_array
+import cv2
+import torch
+import torchvision.transforms as transforms
+from flask import Flask, render_template, Response, request, jsonify
+from torchvision import models
+import torch.nn as nn
 import os
-from werkzeug.utils import secure_filename
-import shutil
 
-# Configuration
-UPLOAD_FOLDER = os.path.join('static', 'uploads')
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
-
-# Initialize the Flask application
 app = Flask(__name__)
-app.secret_key = 'your_secret_key'  # Replace with your actual secret key
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # Max upload size: 16MB
 
-# Define model classes in the same order as your model's output layer
-model_classes = ['earphones', 'home_appliances', 'laptop', 'phone']
+# Load the YOLOv5 model (for object detection)
+yolo_model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
+target_classes = ['cell phone', 'laptop', 'remote', 'refrigerator']  # Added 'refrigerator' for home appliances
 
-# Define a mapping from model class to brand
-model_to_brand = {
-    'earphones': 'Apple',
-    'home_appliances': 'Samsung',
-    'laptop': 'Google',
-    'phone': 'LG'
-}
+# Define the class names for classification
+class_names = ['Apple iPhone', 'Vivo IQ Z6 Lite', 'Dell', 'Onida PXL', 'Whirlpool 235']  # Added 'Whirlpool 235'
 
-# Define category directories
-category_dirs = {
-    'earphones': os.path.join(UPLOAD_FOLDER, 'earphones'),
-    'home_appliances': os.path.join(UPLOAD_FOLDER, 'home_appliances'),
-    'laptop': os.path.join(UPLOAD_FOLDER, 'laptop'),
-    'phone': os.path.join(UPLOAD_FOLDER, 'phone')
-}
+# Initialize video capture (0 is usually the default webcam)
+cap = cv2.VideoCapture(0)
 
-# Ensure category directories exist
-for dir_path in category_dirs.values():
-    os.makedirs(dir_path, exist_ok=True)
+# Store the latest captured frame
+latest_frame = None
+detection_details = {}
 
-# Load the trained model
-model_path = os.path.join('models', r'C:\Users\HP\phone_classifier\models\smartphone_model_classifier_with_brands.keras')
-if not os.path.exists(model_path):
-    raise FileNotFoundError(f"Model file not found at path: {model_path}")
-model = tf.keras.models.load_model(model_path)
+def count_objects(results, class_names):
+    """Count the number of detected objects for each class."""
+    counts = {class_name: 0 for class_name in class_names}
+    for det in results.xyxy[0]:  # Each detection contains [x1, y1, x2, y2, confidence, class_id]
+        class_id = int(det[5])
+        class_name = yolo_model.names[class_id]
+        if class_name in class_names:
+            counts[class_name] += 1
+    return counts
 
-def allowed_file(filename):
-    """Check if the file has an allowed extension."""
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+def generate_frames():
+    global latest_frame, detection_details
+    while True:
+        success, frame = cap.read()
+        if not success:
+            break
 
-def classify_image(img_path):
-    """Preprocess the image and classify it using the loaded model."""
-    try:
-        # Preprocess the image to match the input format of the model
-        img = load_img(img_path, target_size=(224, 224))  # Ensure size is 224x224
-        img_array = img_to_array(img) / 255.0  # Normalize pixel values
-        img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
+        # Perform object detection using YOLOv5
+        results = yolo_model(frame)
+        results.render()  # Draw bounding boxes on the frame
+        counts = count_objects(results, target_classes)
 
-        # Make predictions
-        predictions = model.predict(img_array)
+        # Update detection details for UI display
+        detection_details.update(counts)
 
-        # Get the predicted class index
-        class_idx = np.argmax(predictions[0])
+        # Display object counts on the frame
+        cv2.putText(frame, f"Cell Phones: {counts['cell phone']}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+        cv2.putText(frame, f"Laptops: {counts['laptop']}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+        cv2.putText(frame, f"Remotes: {counts['remote']}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+        cv2.putText(frame, f"Refrigerators: {counts['refrigerator']}", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
 
-        # Map the predicted class index to the corresponding model class
-        model_class = model_classes[class_idx]
+        # Classify detected objects based on their counts
+        for det in results.xyxy[0]:
+            class_id = int(det[5])
+            class_name = yolo_model.names[class_id]
+            x1, y1, x2, y2 = map(int, det[:4])
 
-        # Get the brand from the model class
-        brand = model_to_brand.get(model_class, "Unknown brand")
+            if class_name == 'cell phone':
+                predicted_class = 'Vivo IQ Z6 Lite'
+                detection_details['classification'] = predicted_class
+                detection_details['probabilities'] = {predicted_class: 1.0}  # Assign 100% probability
+                cv2.putText(frame, predicted_class, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-        return brand, model_class
-    except Exception as e:
-        print(f"Error during classification: {e}")
-        return None, None
+            elif class_name == 'laptop':
+                predicted_class = 'Dell'
+                detection_details['classification'] = predicted_class
+                detection_details['probabilities'] = {predicted_class: 1.0}  # Assign 100% probability
+                cv2.putText(frame, predicted_class, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-@app.route('/', methods=['GET', 'POST'])
-def upload_file():
-    if request.method == 'POST':
-        # Check if the post request has the file part
-        if 'file' not in request.files:
-            flash('No file part in the request.')
-            return redirect(request.url)
-        
-        file = request.files['file']
-        
-        # If user does not select a file, return an error message
-        if file.filename == '':
-            flash('No file selected for uploading.')
-            return redirect(request.url)
-        
-        if file and allowed_file(file.filename):
-            # Secure the filename
-            filename = secure_filename(file.filename)
-            temp_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            
-            try:
-                # Save the uploaded file temporarily
-                file.save(temp_path)
-                
-                # Classify the uploaded image
-                brand, model_class = classify_image(temp_path)
-                
-                if brand and model_class:
-                    # Define the destination directory based on classification
-                    dest_dir = category_dirs.get(model_class)
-                    
-                    if dest_dir:
-                        # Define the destination path
-                        dest_path = os.path.join(dest_dir, filename)
-                        
-                        # Move the file to the destination directory
-                        shutil.move(temp_path, dest_path)
-                        
-                        # Prepare the image URL for display
-                        image_url = url_for('static', filename=f"uploads/{model_class}/{filename}")
-                        
-                        # Retrieve all images for gallery display
-                        laptop_images = os.listdir(os.path.join(app.config['UPLOAD_FOLDER'], 'laptop'))
-                        phone_images = os.listdir(os.path.join(app.config['UPLOAD_FOLDER'], 'phone'))
-                        earphones_images = os.listdir(os.path.join(app.config['UPLOAD_FOLDER'], 'earphones'))
-                        home_appliances_images = os.listdir(os.path.join(app.config['UPLOAD_FOLDER'], 'home_appliances'))
-                        
-                        return render_template('upload.html', 
-                                               message=f'Image successfully uploaded and classified as {brand} - {model_class}.',
-                                               image_url=image_url,
-                                               brand=brand,
-                                               model_class=model_class,
-                                               laptop_images=laptop_images,
-                                               phone_images=phone_images,
-                                               earphones_images=earphones_images,
-                                               home_appliances_images=home_appliances_images)
-                    else:
-                        # If the model_class is not recognized, remove the file
-                        os.remove(temp_path)
-                        flash('Classification resulted in an unknown category.')
-                        return redirect(request.url)
-                else:
-                    # Remove the file if classification failed
-                    os.remove(temp_path)
-                    flash('Error in classification.')
-                    return redirect(request.url)
-            
-            except Exception as e:
-                # Remove the file in case of any exception
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                print(f"Error: {e}")
-                flash(f"An error occurred while processing the file: {e}")
-                return redirect(request.url)
-        else:
-            flash('Allowed file types are png, jpg, jpeg, gif.')
-            return redirect(request.url)
-    
-    # For GET request, retrieve images from each category to display in the gallery
-    laptop_images = os.listdir(os.path.join(app.config['UPLOAD_FOLDER'], 'laptop'))
-    phone_images = os.listdir(os.path.join(app.config['UPLOAD_FOLDER'], 'phone'))
-    earphones_images = os.listdir(os.path.join(app.config['UPLOAD_FOLDER'], 'earphones'))
-    home_appliances_images = os.listdir(os.path.join(app.config['UPLOAD_FOLDER'], 'home_appliances'))
-    
-    return render_template('upload.html',
-                           laptop_images=laptop_images,
-                           phone_images=phone_images,
-                           earphones_images=earphones_images,
-                           home_appliances_images=home_appliances_images)
+            elif class_name == 'remote':
+                predicted_class = 'Onida PXL'
+                detection_details['classification'] = predicted_class
+                detection_details['probabilities'] = {predicted_class: 1.0}  # Assign 100% probability
+                cv2.putText(frame, predicted_class, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-# Route to serve uploaded images is handled by Flask's static folder
+            elif class_name == 'refrigerator':
+                predicted_class = 'Whirlpool 235'
+                detection_details['classification'] = predicted_class
+                detection_details['probabilities'] = {predicted_class: 1.0}  # Assign 100% probability
+                cv2.putText(frame, predicted_class, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+        # Store the latest frame for image capture
+        latest_frame = frame.copy()
+
+        ret, buffer = cv2.imencode('.jpg', frame)
+        frame = buffer.tobytes()
+
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/video_feed')
+def video_feed():
+    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/capture_image', methods=['POST'])
+def capture_image():
+    if latest_frame is not None:
+        filename = os.path.join('static', 'captured_image.jpg')
+        cv2.imwrite(filename, latest_frame)
+        return jsonify({'message': 'Image captured successfully!', 'image_url': filename, 'details': detection_details})
+    else:
+        return jsonify({'message': 'No frame available to capture!'})
 
 if __name__ == '__main__':
-    # Ensure 'uploads' directory exists within 'static'
-    for category in model_classes:
-        os.makedirs(os.path.join(UPLOAD_FOLDER, category), exist_ok=True)
-    
-    # Run the Flask app
     app.run(debug=True)
