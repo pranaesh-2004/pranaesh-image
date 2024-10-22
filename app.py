@@ -1,12 +1,9 @@
 import cv2
 import torch
-import torchvision.transforms as transforms
-from flask import Flask, render_template, Response, request, jsonify
-from torchvision import models
-import torch.nn as nn
+import numpy as np
+import streamlit as st
+from PIL import Image
 import os
-
-app = Flask(__name__)
 
 # Load the YOLOv5 model (for object detection)
 yolo_model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
@@ -18,33 +15,38 @@ class_names = ['Apple iPhone', 'Vivo IQ Z6 Lite', 'Dell', 'Onida PXL', 'Whirlpoo
 # Initialize video capture (0 is usually the default webcam)
 cap = cv2.VideoCapture(0)
 
-# Store the latest captured frame
+# Store the latest captured frame and detection details
 latest_frame = None
 detection_details = {}
 
-def count_objects(results, class_names):
+def count_objects(results):
     """Count the number of detected objects for each class."""
-    counts = {class_name: 0 for class_name in class_names}
+    counts = {class_name: 0 for class_name in target_classes}
     for det in results.xyxy[0]:  # Each detection contains [x1, y1, x2, y2, confidence, class_id]
         class_id = int(det[5])
         class_name = yolo_model.names[class_id]
-        if class_name in class_names:
+        if class_name in target_classes:
             counts[class_name] += 1
     return counts
 
-def generate_frames():
-    global latest_frame, detection_details
+st.title("Object Detection with YOLOv5")
+
+# Create a button to start video capture
+if st.button("Start Video"):
+    # Start video capture and display
+    video_placeholder = st.empty()
     while True:
         success, frame = cap.read()
         if not success:
+            st.error("Failed to capture video.")
             break
 
         # Perform object detection using YOLOv5
         results = yolo_model(frame)
         results.render()  # Draw bounding boxes on the frame
-        counts = count_objects(results, target_classes)
+        counts = count_objects(results)
 
-        # Update detection details for UI display
+        # Update detection details for display
         detection_details.update(counts)
 
         # Display object counts on the frame
@@ -86,28 +88,28 @@ def generate_frames():
         # Store the latest frame for image capture
         latest_frame = frame.copy()
 
-        ret, buffer = cv2.imencode('.jpg', frame)
-        frame = buffer.tobytes()
+        # Convert the frame to RGB and display it
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(frame_rgb)
+        video_placeholder.image(image, use_column_width=True)
 
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+        # Display object counts
+        st.write("Detected Objects:")
+        st.write(counts)
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+    cap.release()
 
-@app.route('/video_feed')
-def video_feed():
-    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
-
-@app.route('/capture_image', methods=['POST'])
-def capture_image():
+# Capture image button
+if st.button("Capture Image"):
     if latest_frame is not None:
         filename = os.path.join('static', 'captured_image.jpg')
         cv2.imwrite(filename, latest_frame)
-        return jsonify({'message': 'Image captured successfully!', 'image_url': filename, 'details': detection_details})
+        st.success('Image captured successfully!')
+        st.image(filename, caption='Captured Image', use_column_width=True)
+        st.json(detection_details)
     else:
-        return jsonify({'message': 'No frame available to capture!'})
+        st.error('No frame available to capture!')
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    st.sidebar.title("Settings")
+    st.sidebar.write("Adjust settings as needed.")
